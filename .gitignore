@@ -1,0 +1,35 @@
+# виртуальное окружение
+venv/
+.venv/
+env/
+ENV/
+
+# Python-кэш
+__pycache__/
+*.py[cod]
+*.pyo
+
+# IDE
+.idea/
+.vscode/
+
+# логи и временные файлы
+*.log
+*.tmp
+
+# конфиденциальные данные
+.env
+*.env
+*.pem
+*.key
+*.sqlite
+
+# большие бинарники (на всякий случай)
+*.zip
+*.tar
+*.gz
+*.rar
+*.mp4
+*.mov
+*.avi
+*.apk
