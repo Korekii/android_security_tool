@@ -87,8 +87,7 @@ def cmd_dynamic(
         if not ok:
             return
 
-    # Пытаемся запустить приложение (если уже запущено — просто ничего страшного)
-    launch_app_via_adb(package, device_id=device_id)
+
 
     print(f"[dyn] Запуск динамического анализа для {package}, {duration} секунд...")
     threats = run_dynamic_analysis_session(
@@ -110,11 +109,36 @@ def cmd_dynamic(
 
     # Формируем AnalysisResult только для динамики
     if pdf_path:
+
+        from core.apk_loader import load_apk
+
+        app_name = None
+        version_name = None
+
+        if apk_path:
+            try:
+                apk_obj = load_apk(apk_path)
+
+                # Версию обычно можно достать без ресурсов
+                try:
+                    version_name = apk_obj.get_androidversion_name()
+                except Exception:
+                    version_name = None
+
+                # Название приложения часто требует resources.arsc -> может падать на новых APK
+                try:
+                    app_name = apk_obj.get_app_name()
+                except Exception:
+                    app_name = None
+
+            except Exception as e:
+                print(f"[dyn] Не удалось прочитать метаданные APK через androguard: {e}")
+
         analysis = AnalysisResult(
             apk_path=apk_path or f"<runtime:{package}>",
             package_name=package,
-            app_name=None,
-            version_name=None,
+            app_name=app_name,
+            version_name=version_name,
         )
         analysis.extend(threats)
         try:

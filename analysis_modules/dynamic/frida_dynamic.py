@@ -1,7 +1,6 @@
 # analysis_modules/dynamic/frida_dynamic.py
 from __future__ import annotations
 
-import json
 import subprocess
 import time
 from typing import List, Optional
@@ -36,287 +35,154 @@ def install_apk_via_adb(apk_path: str, device_id: Optional[str] = None) -> bool:
 
 def launch_app_via_adb(package_name: str, device_id: Optional[str] = None) -> None:
     """Запуск приложения через adb shell monkey."""
-    proc = _run_adb(["shell", "monkey", "-p", package_name, "-c",
-                     "android.intent.category.LAUNCHER", "1"], device_id=device_id)
+    proc = _run_adb(
+        ["shell", "monkey", "-p", package_name, "-c", "android.intent.category.LAUNCHER", "1"],
+        device_id=device_id,
+    )
     if proc.returncode != 0:
         print(f"[dyn] adb launch error: {proc.stderr.strip()}")
     else:
         print(f"[dyn] App launch requested for package: {package_name}")
 
 
-# ================== Frida script ==================
+# ================== Frida script (native) ==================
 
 FRIDA_SCRIPT = r"""
-// Frida Java hooks: файловые операции + runtime permissions + sensitive API
-Java.perform(function () {
+(function () {
+  // Всегда даём признаки жизни
+  send({ kind: "frida_status", status: "script_loaded_native" });
+  send({kind:"frida_status", status: (Java && Java.available) ? "java_available" : "java_not_available"});
+
+  function ptrToString(p) {
+    try { return Memory.readCString(p); } catch (e) { return "<unreadable>"; }
+  }
+
+  function classifyPath(path) {
+    if (!path) return "unknown";
+    if (path.indexOf("/sdcard") === 0 ||
+        path.indexOf("/storage/emulated") === 0 ||
+        path.indexOf("/mnt/sdcard") === 0) return "external";
+    if (path.indexOf("/data/data") === 0) return "internal";
+    return "other";
+  }
+
+  // Важно: ищем символы в libc.so, а не через null
+  function hookExport(name, onEnterFn, onLeaveFn) {
+    var addr = null;
+
     try {
-        // -------- FILE I/O HOOKS --------
-        var FileOutputStream = Java.use('java.io.FileOutputStream');
-        var FileInputStream = Java.use('java.io.FileInputStream');
-        var RandomAccessFile = Java.use('java.io.RandomAccessFile');
+      addr = Module.findExportByName("libc.so", name);
+    } catch (e) {}
 
-        function classifyPath(path) {
-            var p = String(path);
-            var location = "internal";
-            if (p.indexOf("/sdcard") === 0 ||
-                p.indexOf("/storage/emulated") === 0 ||
-                p.indexOf("/mnt/sdcard") === 0) {
-                location = "external";
-            }
-            return { path: p, location: location };
-        }
-
-        // FileOutputStream(File)
-        FileOutputStream.$init.overload('java.io.File').implementation = function (file) {
-            var info = classifyPath(file.getPath());
-            send({
-                kind: "file_io",
-                op: "write",
-                location: info.location,
-                path: info.path,
-                api: "FileOutputStream(File)"
-            });
-            return this.$init(file);
-        };
-
-        // FileOutputStream(String)
-        FileOutputStream.$init.overload('java.lang.String').implementation = function (name) {
-            var info = classifyPath(name);
-            send({
-                kind: "file_io",
-                op: "write",
-                location: info.location,
-                path: info.path,
-                api: "FileOutputStream(String)"
-            });
-            return this.$init(name);
-        };
-
-        // FileInputStream(File)
-        FileInputStream.$init.overload('java.io.File').implementation = function (file) {
-            var info = classifyPath(file.getPath());
-            send({
-                kind: "file_io",
-                op: "read",
-                location: info.location,
-                path: info.path,
-                api: "FileInputStream(File)"
-            });
-            return this.$init(file);
-        };
-
-        // FileInputStream(String)
-        FileInputStream.$init.overload('java.lang.String').implementation = function (name) {
-            var info = classifyPath(name);
-            send({
-                kind: "file_io",
-                op: "read",
-                location: info.location,
-                path: info.path,
-                api: "FileInputStream(String)"
-            });
-            return this.$init(name);
-        };
-
-        // RandomAccessFile(File, String mode)
-        RandomAccessFile.$init.overload('java.io.File', 'java.lang.String').implementation =
-            function (file, mode) {
-                var info = classifyPath(file.getPath());
-                var op = (String(mode).indexOf("w") !== -1) ? "rw" : "r";
-                send({
-                    kind: "file_io",
-                    op: op,
-                    location: info.location,
-                    path: info.path,
-                    api: "RandomAccessFile(File, String)",
-                    mode: String(mode)
-                });
-                return this.$init(file, mode);
-            };
-
-        // RandomAccessFile(String, String mode)
-        RandomAccessFile.$init.overload('java.lang.String', 'java.lang.String').implementation =
-            function (name, mode) {
-                var info = classifyPath(name);
-                var op = (String(mode).indexOf("w") !== -1) ? "rw" : "r";
-                send({
-                    kind: "file_io",
-                    op: op,
-                    location: info.location,
-                    path: info.path,
-                    api: "RandomAccessFile(String, String)",
-                    mode: String(mode)
-                });
-                return this.$init(name, mode);
-            };
-
-        // -------- RUNTIME PERMISSIONS --------
-
-        try {
-            var ActivityCompat = Java.use('androidx.core.app.ActivityCompat');
-            ActivityCompat.requestPermissions.overload(
-                'android.app.Activity',
-                '[Ljava.lang.String;',
-                'int'
-            ).implementation = function (activity, perms, requestCode) {
-                var lst = [];
-                for (var i = 0; i < perms.length; i++) {
-                    lst.push(String(perms[i]));
-                }
-                send({
-                    kind: "runtime_permission_request",
-                    permissions: lst,
-                    requestCode: requestCode
-                });
-                return this.requestPermissions(activity, perms, requestCode);
-            };
-        } catch (e) {
-            // not all apps use androidx ActivityCompat
-        }
-
-        try {
-            var Activity = Java.use('android.app.Activity');
-            Activity.requestPermissions.overload(
-                '[Ljava.lang.String;',
-                'int'
-            ).implementation = function (perms, requestCode) {
-                var lst = [];
-                for (var i = 0; i < perms.length; i++) {
-                    lst.push(String(perms[i]));
-                }
-                send({
-                    kind: "runtime_permission_request",
-                    permissions: lst,
-                    requestCode: requestCode
-                });
-                return this.requestPermissions(perms, requestCode);
-            };
-        } catch (e2) {
-            // ignore
-        }
-
-        // -------- SENSITIVE APIS --------
-
-        // Location
-        try {
-            var LocationManager = Java.use('android.location.LocationManager');
-            LocationManager.requestLocationUpdates.overload(
-                'java.lang.String',
-                'long',
-                'float',
-                'android.location.LocationListener'
-            ).implementation = function (provider, minTime, minDistance, listener) {
-                send({
-                    kind: "sensitive_api",
-                    api: "LocationManager.requestLocationUpdates",
-                    provider: String(provider),
-                    minTime: minTime,
-                    minDistance: minDistance
-                });
-                return this.requestLocationUpdates(provider, minTime, minDistance, listener);
-            };
-        } catch (e3) {}
-
-        // SMS
-        try {
-            var SmsManager = Java.use('android.telephony.SmsManager');
-            SmsManager.sendTextMessage.overload(
-                'java.lang.String',
-                'java.lang.String',
-                'java.lang.String',
-                'android.app.PendingIntent',
-                'android.app.PendingIntent'
-            ).implementation = function (dest, sca, text, sentPI, deliveryPI) {
-                send({
-                    kind: "sensitive_api",
-                    api: "SmsManager.sendTextMessage",
-                    destination: String(dest),
-                    textPreview: String(text).substring(0, 50)
-                });
-                return this.sendTextMessage(dest, sca, text, sentPI, deliveryPI);
-            };
-        } catch (e4) {}
-
-        // Camera (legacy API)
-        try {
-            var Camera = Java.use('android.hardware.Camera');
-            Camera.open.overload().implementation = function () {
-                send({
-                    kind: "sensitive_api",
-                    api: "Camera.open",
-                    details: "Camera opened via legacy API"
-                });
-                return this.open();
-            };
-        } catch (e5) {}
-
-        // Microphone / AudioRecord (упрощённо)
-        try {
-            var AudioRecord = Java.use('android.media.AudioRecord');
-            AudioRecord.startRecording.implementation = function () {
-                send({
-                    kind: "sensitive_api",
-                    api: "AudioRecord.startRecording",
-                    details: "Audio recording started"
-                });
-                return this.startRecording();
-            };
-        } catch (e6) {}
-
-        send({ kind: "frida_status", status: "hooks_attached" });
-    } catch (eOuter) {
-        send({ kind: "frida_error", error: String(eOuter) });
+    if (!addr) {
+      try { addr = Module.findExportByName(null, name); } catch (e2) {}
     }
-});
+
+    if (!addr) {
+      send({ kind: "frida_status", status: "hook_missing", hook: name });
+      return false;
+    }
+
+    Interceptor.attach(addr, {
+      onEnter: function (args) { if (onEnterFn) onEnterFn.call(this, args); },
+      onLeave: function (retval) { if (onLeaveFn) onLeaveFn.call(this, retval); }
+    });
+
+    send({ kind: "frida_status", status: "hook_ok", hook: name });
+    return true;
+  }
+
+  // -------------------------
+  // FILE I/O (libc)
+  // -------------------------
+
+  // Android часто использует openat64/open64/__openat64, поэтому хукаем набор вариантов
+  ["open", "open64", "openat", "openat64", "__openat", "__openat64"].forEach(function (fn) {
+    hookExport(fn, function (args) {
+      var pathPtr = (fn.indexOf("openat") !== -1) ? args[1] : args[0];
+      var path = ptrToString(pathPtr);
+
+      send({
+        kind: "file_io",
+        op: fn,
+        path: path,
+        location: classifyPath(path),
+        api: "libc." + fn
+      });
+    });
+  });
+
+  // read/write — полезны и для файлов, и для сокетов
+  hookExport("read", function (args) {
+    send({
+      kind: "file_io",
+      op: "read",
+      fd: args[0].toInt32(),
+      count: args[2].toInt32(),
+      api: "libc.read"
+    });
+  });
+
+  hookExport("write", function (args) {
+    send({
+      kind: "file_io",
+      op: "write",
+      fd: args[0].toInt32(),
+      count: args[2].toInt32(),
+      api: "libc.write"
+    });
+  });
+
+  // -------------------------
+  // NETWORK (libc)
+  // -------------------------
+  // Минимальный и очень устойчивый подход:
+  // фиксируем факт сетевых вызовов, а не пытаемся везде парсить sockaddr (это можно расширять позже)
+
+  ["connect", "send", "sendto", "sendmsg", "recv", "recvfrom", "recvmsg"].forEach(function (fn) {
+    hookExport(fn, function (args) {
+      send({
+        kind: "net_call",
+        api: "libc." + fn,
+        fd: args[0].toInt32()
+      });
+    });
+  });
+
+  // Финальный статус
+  send({ kind: "frida_status", status: "hooks_attached" });
+})();
 """
 
 
-# ================== Dynamic analysis runner ==================
+# ================== severity helpers ==================
 
 def _severity_for_file_event(location: str, op: str) -> Severity:
-    # внешнее хранилище + запись → HIGH, чтение → MEDIUM
+    # external + write/open* -> более опасно
     if location == "external":
-        if op in ("write", "rw"):
+        if "write" in op:
             return Severity.HIGH
         return Severity.MEDIUM
-    # внутреннее — INFO/MEDIUM
-    if op in ("write", "rw"):
+
+    if location == "internal":
+        if "write" in op:
+            return Severity.MEDIUM
+        return Severity.INFO
+
+    # other/unknown
+    if "write" in op:
         return Severity.MEDIUM
     return Severity.INFO
 
 
-def _severity_for_permission(perm: str) -> Severity:
-    dangerous_prefixes = (
-        "android.permission.READ_SMS",
-        "android.permission.SEND_SMS",
-        "android.permission.RECEIVE_SMS",
-        "android.permission.RECORD_AUDIO",
-        "android.permission.READ_CONTACTS",
-        "android.permission.WRITE_CONTACTS",
-        "android.permission.ACCESS_FINE_LOCATION",
-        "android.permission.ACCESS_COARSE_LOCATION",
-        "android.permission.CAMERA",
-        "android.permission.READ_CALL_LOG",
-        "android.permission.WRITE_CALL_LOG",
-        "android.permission.READ_EXTERNAL_STORAGE",
-        "android.permission.WRITE_EXTERNAL_STORAGE",
-    )
-    for p in dangerous_prefixes:
-        if perm == p:
-            return Severity.HIGH
-    # прочие runtime-permissions — medium
-    return Severity.MEDIUM
-
-
-def _severity_for_sensitive_api(api: str) -> Severity:
-    if "SmsManager.sendTextMessage" in api:
-        return Severity.HIGH
-    if "LocationManager.requestLocationUpdates" in api:
-        return Severity.MEDIUM
-    if "Camera.open" in api or "AudioRecord.startRecording" in api:
-        return Severity.MEDIUM
+def _severity_for_net_call(api: str) -> Severity:
+    # очень простая эвристика: connect/send* => LOW, recv* => INFO
+    if api and ("connect" in api or "send" in api):
+        return Severity.LOW
     return Severity.INFO
 
+
+# ================== Dynamic analysis runner ==================
 
 def run_dynamic_analysis_session(
     package_name: str,
@@ -324,138 +190,189 @@ def run_dynamic_analysis_session(
     device_id: Optional[str] = None,
 ) -> List[Threat]:
     """
-    Подключается к приложению через Frida, вешает хуки и
-    в течение duration секунд собирает события:
-      - файловые операции (FileInput/OutputStream, RandomAccessFile)
-      - runtime permissions request
-      - чувствительные API (камера, локация, микрофон, SMS)
-    Возвращает список Threat.
+    Native-only динамический анализ:
+    - файловые системные вызовы (open*/read/write)
+    - сетевые системные вызовы (connect/send*/recv*)
+    Работает даже для NDK/Qt приложений.
     """
     threats: List[Threat] = []
 
-    # Получаем устройство
+    # 1) Получаем устройство
     if device_id:
         device = frida.get_device(device_id)
     else:
         device = frida.get_usb_device(timeout=10)
 
-    # 🔴 Больше НЕ используем enumerate_applications()
-    # Всегда spawn'им процесс по имени пакета
-    print(f"[dyn] Spawning {package_name} ...")
-    pid = device.spawn([package_name])
-    device.resume(pid)
-    time.sleep(2)  # дать приложению стартануть
+    # 2) Убеждаемся, что приложение запущено
+    proc = _run_adb(["shell", "pidof", package_name], device_id=device_id)
+    pids: list[int] = []
+    if proc.returncode == 0 and proc.stdout.strip():
+        for part in proc.stdout.strip().split():
+            try:
+                pids.append(int(part))
+            except ValueError:
+                pass
 
-    session = device.attach(pid)
-    script = session.create_script(FRIDA_SCRIPT)
+    if not pids:
+        launch_app_via_adb(package_name, device_id=device_id)
+        time.sleep(2)
+        proc2 = _run_adb(["shell", "pidof", package_name], device_id=device_id)
+        if proc2.returncode == 0 and proc2.stdout.strip():
+            for part in proc2.stdout.strip().split():
+                try:
+                    pids.append(int(part))
+                except ValueError:
+                    pass
 
+    if not pids:
+        raise RuntimeError(f"[dyn] Не удалось получить PID процесса {package_name}. Приложение не запущено?")
+
+    # 3) Выбираем PID: пробуем по очереди (если несколько процессов)
+    chosen_session = None
+    chosen_pid = None
+    chosen_script = None
+
+    def _try_attach(pid: int):
+        session = device.attach(pid)
+        script = session.create_script(FRIDA_SCRIPT)
+
+        got = {"hooks": False}
+
+        def _probe_message(message, data):
+            # не глотаем ошибки JS
+            if message.get("type") == "error":
+                print("[dyn] FRIDA SCRIPT ERROR (probe):", message.get("stack") or message)
+                return
+            if message.get("type") != "send":
+                return
+            payload = message.get("payload") or {}
+            if payload.get("kind") == "frida_status" and payload.get("status") == "hooks_attached":
+                got["hooks"] = True
+
+        script.on("message", _probe_message)
+        script.load()
+        time.sleep(1.0)
+        return session, script, got["hooks"]
+
+    for candidate in pids:
+        print(f"[dyn] Trying attach pid={candidate} ...")
+        try:
+            session, script, ok = _try_attach(candidate)
+            if ok:
+                chosen_session, chosen_script, chosen_pid = session, script, candidate
+                break
+            # если hooks_attached не получили — отсоединяемся
+            try:
+                session.detach()
+            except Exception:
+                pass
+        except Exception as e:
+            print(f"[dyn] attach failed pid={candidate}: {e}")
+            continue
+
+    if chosen_session is None or chosen_script is None or chosen_pid is None:
+        # fallback: attach к первому pid без "probe"
+        chosen_pid = pids[0]
+        print(f"[dyn] Fallback attach to pid={chosen_pid}")
+        chosen_session = device.attach(chosen_pid)
+        chosen_script = chosen_session.create_script(FRIDA_SCRIPT)
+
+    print(f"[dyn] Using pid={chosen_pid} for instrumentation")
+
+    # 4) Основной on_message: собираем Threat + печатаем статусы hook_ok/hook_missing
     def on_message(message, data):
-        if message["type"] != "send":
-            return
-        payload = message.get("payload") or {}
-        kind = payload.get("kind")
-
-        if kind == "frida_status":
-            print(f"[dyn] Frida status: {payload.get('status')}")
-            return
-        if kind == "frida_error":
-            print(f"[dyn] Frida error in script: {payload.get('error')}")
+        # Очень важно: показываем ошибки frida-скрипта
+        if message.get("type") == "error":
+            print("[dyn] FRIDA SCRIPT ERROR:", message.get("stack") or message)
             threats.append(
                 Threat(
                     analyzer=DYNAMIC_ANALYZER_NAME,
                     type="frida_script_error",
-                    title="Ошибка во Frida-скрипте",
-                    description=str(payload.get("error")),
-                    severity=Severity.INFO,
+                    title="Ошибка Frida-скрипта",
+                    description=str(message.get("stack") or message),
+                    severity=Severity.HIGH,
                 )
             )
+            return
+
+        if message.get("type") != "send":
+            return
+
+        payload = message.get("payload") or {}
+        kind = payload.get("kind")
+
+        if kind == "frida_status":
+            hook = payload.get("hook")
+            if hook:
+                print(f"[dyn] Frida status: {payload.get('status')} ({hook})")
+            else:
+                print(f"[dyn] Frida status: {payload.get('status')}")
             return
 
         if kind == "file_io":
+            op = payload.get("op", "")
             path = payload.get("path", "")
-            location = payload.get("location", "internal")
-            op = payload.get("op", "r")
+            location = payload.get("location", "unknown")
             api = payload.get("api", "")
             sev = _severity_for_file_event(location, op)
 
-            desc = f"Приложение выполнило файловую операцию '{op}' по пути {path} через {api}."
-            if location == "external":
-                desc += " Операция во внешнем хранилище (sdcard/storage/emulated)."
-
+            desc = f"Native file I/O: {op} path={path} ({location}), via {api}"
             threats.append(
                 Threat(
                     analyzer=DYNAMIC_ANALYZER_NAME,
-                    type="dynamic_file_io",
-                    title="Файловая операция во время выполнения",
+                    type="dynamic_file_io_native",
+                    title="Файловая операция (native)",
                     description=desc,
                     severity=sev,
                     location=path,
-                    metadata={"op": op, "location": location, "api": api},
+                    metadata=payload,
                 )
             )
             return
 
-        if kind == "runtime_permission_request":
-            perms = payload.get("permissions", [])
-            request_code = payload.get("requestCode")
-            for perm in perms:
-                sev = _severity_for_permission(perm)
-                threats.append(
-                    Threat(
-                        analyzer=DYNAMIC_ANALYZER_NAME,
-                        type="runtime_permission_request",
-                        title="Запрос разрешения во время выполнения",
-                        description=(
-                            f"Приложение запросило разрешение {perm} "
-                            f"(requestCode={request_code})."
-                        ),
-                        severity=sev,
-                        metadata={"permission": perm, "requestCode": request_code},
-                    )
-                )
-            return
-
-        if kind == "sensitive_api":
-            api_name = payload.get("api", "")
-            sev = _severity_for_sensitive_api(api_name)
-            desc_parts = [f"Вызван чувствительный API: {api_name}."]
-            if "LocationManager.requestLocationUpdates" in api_name:
-                desc_parts.append(
-                    f" Провайдер: {payload.get('provider')}, "
-                    f"minTime={payload.get('minTime')}, "
-                    f"minDistance={payload.get('minDistance')}."
-                )
-            if "SmsManager.sendTextMessage" in api_name:
-                desc_parts.append(
-                    f" Отправка SMS на {payload.get('destination')}, "
-                    f"предпросмотр текста: {payload.get('textPreview')}."
-                )
-            if "Camera.open" in api_name or "AudioRecord.startRecording" in api_name:
-                desc_parts.append(" Это может означать доступ к камере/микрофону.")
+        if kind == "net_call":
+            api = payload.get("api", "")
+            fd = payload.get("fd")
+            sev = _severity_for_net_call(api)
 
             threats.append(
                 Threat(
                     analyzer=DYNAMIC_ANALYZER_NAME,
-                    type="sensitive_api_call",
-                    title="Вызов чувствительного API во время выполнения",
-                    description="".join(desc_parts),
+                    type="net_call_native",
+                    title="Сетевой вызов (native)",
+                    description=f"Вызван {api} (fd={fd})",
                     severity=sev,
                     metadata=payload,
                 )
             )
             return
 
-    script.on("message", on_message)
-    script.load()
+    chosen_script.on("message", on_message)
+    # НЕ делаем chosen_script.load() повторно — он уже загружен в _try_attach()
 
-    print(f"[dyn] Frida hooks attached to {package_name} (pid={pid}), running for {duration} seconds...")
+    print(f"[dyn] Hooks loaded, listening for {duration} seconds...")
     time.sleep(max(1, duration))
 
     try:
-        session.detach()
+        chosen_session.detach()
     except Exception:
         pass
 
+    if not threats:
+        # чтобы PDF не выглядел пустым как "ничего не запустилось"
+        threats.append(
+            Threat(
+                analyzer=DYNAMIC_ANALYZER_NAME,
+                type="dynamic_session_summary",
+                title="Динамический анализ выполнен",
+                description=(
+                    "Сессия динамического анализа выполнена, но за отведённое время "
+                    "не было зафиксировано событий, попадающих под текущие хуки (native file/network). "
+                    "Увеличьте duration и/или активнее взаимодействуйте с приложением."
+                ),
+                severity=Severity.INFO,
+            )
+        )
+
     print(f"[dyn] Dynamic session finished, collected {len(threats)} events.")
     return threats
-
