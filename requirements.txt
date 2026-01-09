@@ -1,0 +1,7 @@
+androguard
+frida
+frida-tools
+reportlab
+joblib
+scikit-learn
+lxml
