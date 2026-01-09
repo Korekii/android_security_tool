@@ -11,7 +11,6 @@ from .base import BaseStaticAnalyzer
 class CryptoAnalyzer(BaseStaticAnalyzer):
     name = "CryptoAnalyzer"
 
-    # Паттерны небезопасной криптографии в строках
     WEAK_CRYPTO_PATTERNS = {
         "md5": {
             "regex": re.compile(r"\bMD5\b", re.IGNORECASE),

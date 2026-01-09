@@ -26,9 +26,6 @@ def get_default_static_analyzers() -> List[BaseStaticAnalyzer]:
 
 
 def run_full_static_analysis(apk_path: str) -> AnalysisResult:
-    """
-    Главный пайплайн статического анализа: прогоняет APK через все анализаторы.
-    """
     analysis = AnalysisResult(apk_path=apk_path)
     for analyzer in get_default_static_analyzers():
         try:

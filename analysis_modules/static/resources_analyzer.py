@@ -10,24 +10,19 @@ from core.models import AnalysisResult, Severity, Threat
 from .base import BaseStaticAnalyzer
 
 
-# Базовый URL-regex
 URL_REGEX = re.compile(
     r"(https?://[a-zA-Z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+)",
     re.IGNORECASE,
 )
 
-# Более строгий IPv4-regex: только числа и точки,
-# а затем ещё валидируем каждую часть (0–255) вручную.
 IP_CANDIDATE_REGEX = re.compile(
     r"\b(\d{1,3}(?:\.\d{1,3}){3})\b"
 )
 
-# Известные “нормальные” системные URL, которые не хотим репортить
 IGNORED_URL_PREFIXES = {
     "http://schemas.android.com/apk/res/android",
 }
 
-# Категории доменов / ключевых слов
 CDN_DOMAINS = {
     "fonts.googleapis.com",
     "fonts.gstatic.com",
@@ -67,54 +62,39 @@ API_KEYWORDS = {
 
 
 def _classify_url(url: str) -> Tuple[str, Severity]:
-    """
-    Простейшая классификация URL.
-    Возвращает (category, severity).
-    """
     parsed = urlparse(url)
     host = parsed.netloc.lower()
 
-    # Уберём порт, если есть
     if ":" in host:
         host = host.split(":", 1)[0]
 
-    # 1) Системные, схемные и прочие internal — INFO/LOW
     for prefix in IGNORED_URL_PREFIXES:
         if url.startswith(prefix):
             return "android_schema", Severity.INFO
 
-    # 2) CDN
     if host in CDN_DOMAINS:
         return "cdn", Severity.LOW
 
-    # 3) Явный трекинг / реклама
     if host in TRACKING_DOMAINS:
         return "tracking", Severity.MEDIUM
 
-    # 4) Явно подозрительные домены
     for dom in SUSPICIOUS_DOMAINS:
         if dom in host:
             return "suspicious_domain", Severity.HIGH
 
-    # 5) Телеметрия по ключевым словам
     for kw in TELEMETRY_KEYWORDS:
         if kw in host:
             return "telemetry", Severity.MEDIUM
 
-    # 6) Вероятно API
     path = (parsed.path or "").lower()
     for kw in API_KEYWORDS:
         if kw in host or kw in path:
             return "api_endpoint", Severity.LOW
 
-    # 7) Остальное — просто “generic” URL
     return "generic", Severity.LOW
 
 
 def _is_valid_ipv4(ip: str) -> bool:
-    """
-    Строгая проверка IPv4: каждое число 0–255.
-    """
     parts = ip.split(".")
     if len(parts) != 4:
         return False
@@ -138,7 +118,6 @@ class ResourcesAnalyzer(BaseStaticAnalyzer):
     def analyze(self, apk_path: str, analysis: AnalysisResult) -> None:
         findings: List[Threat] = []
 
-        # Чтобы не спамить дубликатами: (filename, url) / (filename, ip)
         seen_urls = set()
         seen_ips = set()
 
@@ -146,7 +125,6 @@ class ResourcesAnalyzer(BaseStaticAnalyzer):
             for info in zf.infolist():
                 filename = info.filename
 
-                # Только текстовые файлы
                 if not any(filename.lower().endswith(ext) for ext in self.TEXT_EXTENSIONS):
                     continue
 
@@ -161,9 +139,7 @@ class ResourcesAnalyzer(BaseStaticAnalyzer):
                 except Exception:
                     continue
 
-                # ---- URL-адреса ----
                 for url in URL_REGEX.findall(text):
-                    # Игнорируем схемный android URL
                     if any(url.startswith(prefix) for prefix in IGNORED_URL_PREFIXES):
                         continue
 
@@ -174,7 +150,6 @@ class ResourcesAnalyzer(BaseStaticAnalyzer):
 
                     category, severity = _classify_url(url)
 
-                    # Базовое описание
                     title = "URL в ресурсах"
                     if category == "cdn":
                         title = "CDN-URL в ресурсах"
@@ -192,7 +167,6 @@ class ResourcesAnalyzer(BaseStaticAnalyzer):
 
                     description = f"В файле {filename} найден URL: {url}"
 
-                    # Уточняем описание для некоторых типов
                     if category == "cdn":
                         description += (
                             " (CDN-провайдер, обычно используется для статики/библиотек)."
@@ -226,10 +200,8 @@ class ResourcesAnalyzer(BaseStaticAnalyzer):
                         )
                     )
 
-                # ---- IP-адреса ----
                 for ip in IP_CANDIDATE_REGEX.findall(text):
                     if not _is_valid_ipv4(ip):
-                        # отбрасываем IP, похожие на 207.229.41.465 и т.п.
                         continue
 
                     key_ip = (filename, ip)

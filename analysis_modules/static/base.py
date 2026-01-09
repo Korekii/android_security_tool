@@ -11,7 +11,4 @@ class BaseStaticAnalyzer(ABC):
 
     @abstractmethod
     def analyze(self, apk_path: str, analysis: AnalysisResult) -> None:
-        """
-        Модифицирует объект analysis: добавляет findings, заполняет метаданные.
-        """
         raise NotImplementedError

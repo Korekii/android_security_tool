@@ -37,10 +37,6 @@ def _extract_components(apk) -> Set[str]:
 
 
 def _extract_api_calls(dx) -> Set[str]:
-    """
-    Собираем набор вызовов в формате:
-    Lcom/pkg/Class;->method
-    """
     api: Set[str] = set()
     try:
         for m in dx.get_methods():
@@ -61,14 +57,8 @@ def _build_feature_vector(
     api_calls: Set[str],
     components: Set[str],
 ) -> List[int]:
-    """
-    Превращаем найденные признаки в бинарный вектор строго в порядке feature_columns.
-    Мы делаем "гибкое" сопоставление, потому что у разных пайплайнов могут быть префиксы:
-    permission::, api_call:: и т.п.
-    """
     present = set()
 
-    # добавляем как есть
     present |= permissions
     present |= api_calls
     present |= components
@@ -80,7 +70,6 @@ def _build_feature_vector(
             vec[i] = 1
             continue
 
-        # префиксы типа permission::X, api_call::Y
         if "::" in col:
             suffix = col.split("::", 1)[1]
             if suffix in present:
@@ -122,7 +111,6 @@ class MlAnalyzer(BaseStaticAnalyzer):
         x_vec = _build_feature_vector(cols, perms, apis, comps)
         X = [x_vec]
 
-        # предсказание
         label = "unknown"
         proba = None
 
@@ -135,7 +123,6 @@ class MlAnalyzer(BaseStaticAnalyzer):
 
         if hasattr(model, "predict_proba"):
             p = model.predict_proba(X)[0]
-            # пытаемся аккуратно взять вероятность класса malware/1
             if hasattr(model, "classes_"):
                 classes = list(model.classes_)
                 if "malware" in classes:
@@ -147,7 +134,6 @@ class MlAnalyzer(BaseStaticAnalyzer):
             else:
                 proba = float(max(p))
 
-        # severity
         if label == "malware" and (proba is None or proba >= 0.85):
             sev = Severity.HIGH
             title = "ML: вероятно вредоносное приложение"

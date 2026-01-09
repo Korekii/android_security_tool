@@ -3,13 +3,9 @@ import argparse
 import os
 from typing import List
 from core.models import AnalysisResult
-from reports.pdf_report import generate_pdf_report
 
 from analysis_modules.static_analysis import run_full_static_analysis
-from analysis_modules.dynamic.frida_dynamic import (
-    run_dynamic_analysis_session,
-    install_apk_via_adb,
-)
+
 from core.models import Severity, Threat
 from reports.pdf_report import generate_pdf_report
 
@@ -52,7 +48,6 @@ def cmd_scan_apk(apk_path: str, pdf_path: str | None = None) -> None:
             print(f"  metadata: {t.metadata}")
         print()
 
-    # Генерация PDF-отчёта
     if pdf_path:
         try:
             generate_pdf_report(analysis, pdf_path, title="Android Static Analysis Report",)
@@ -72,7 +67,6 @@ def cmd_dynamic(
     device_id: str | None = None,
     pdf_path: str | None = None,
 ) -> None:
-    # ленивый импорт, чтобы статика работала даже без frida
     from analysis_modules.dynamic.frida_dynamic import (
         run_dynamic_analysis_session,
         install_apk_via_adb,
@@ -107,7 +101,6 @@ def cmd_dynamic(
             print(f"  metadata: {t.metadata}")
         print()
 
-    # Формируем AnalysisResult только для динамики
     if pdf_path:
 
         from core.apk_loader import load_apk
@@ -119,13 +112,11 @@ def cmd_dynamic(
             try:
                 apk_obj = load_apk(apk_path)
 
-                # Версию обычно можно достать без ресурсов
                 try:
                     version_name = apk_obj.get_androidversion_name()
                 except Exception:
                     version_name = None
 
-                # Название приложения часто требует resources.arsc -> может падать на новых APK
                 try:
                     app_name = apk_obj.get_app_name()
                 except Exception:
@@ -154,7 +145,6 @@ def main():
     )
     subparsers = parser.add_subparsers(dest="command")
 
-    # Статический анализ APK
     p_scan = subparsers.add_parser("scan-apk", help="Выполнить статический анализ APK")
     p_scan.add_argument("apk", help="Путь к APK-файлу")
     p_scan.add_argument(
@@ -163,7 +153,6 @@ def main():
         help="Путь для сохранения PDF-отчёта"
     )
 
-    # Динамический анализ
     p_dyn = subparsers.add_parser("dyn", help="Выполнить динамический анализ приложения")
     p_dyn.add_argument("package", help="Имя пакета (например, com.example.app)")
     p_dyn.add_argument(

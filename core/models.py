@@ -13,7 +13,6 @@ class Severity(str, Enum):
     CRITICAL = "critical"
 
 
-# веса для risk scoring
 SEVERITY_WEIGHTS: Dict[Severity, int] = {
     Severity.INFO: 0,
     Severity.LOW: 1,

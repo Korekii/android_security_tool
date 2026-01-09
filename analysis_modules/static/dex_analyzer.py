@@ -13,10 +13,7 @@ from .base import BaseStaticAnalyzer
 class DexAnalyzer(BaseStaticAnalyzer):
     name = "DexAnalyzer"
 
-    # Ключ: (class_name, method_name)
-    # class_name в dalvik-формате, например: Landroid/webkit/WebView;
     DANGEROUS_APIS: Dict[Tuple[str, str], Dict] = {
-        # Классические
         ("Landroid/telephony/SmsManager;", "sendTextMessage"): {
             "severity": Severity.HIGH,
             "type": "dangerous_api_call",
@@ -32,7 +29,6 @@ class DexAnalyzer(BaseStaticAnalyzer):
             "type": "dynamic_code_loading",
             "description": "Динамическая загрузка кода через DexClassLoader.",
         },
-        # WebView / JS
         ("Landroid/webkit/WebView;", "loadUrl"): {
             "severity": Severity.MEDIUM,
             "type": "webview_load_url",
@@ -49,7 +45,6 @@ class DexAnalyzer(BaseStaticAnalyzer):
             "type": "webview_js_enabled",
             "description": "Включение JavaScript в WebView через WebSettings.setJavaScriptEnabled().",
         },
-        # PendingIntent
         ("Landroid/app/PendingIntent;", "getActivity"): {
             "severity": Severity.MEDIUM,
             "type": "pending_intent_creation",
@@ -68,7 +63,6 @@ class DexAnalyzer(BaseStaticAnalyzer):
         },
     }
 
-    # Регексы для поиска хардкоженных секретов
     SECRET_PATTERNS: Dict[str, re.Pattern] = {
         "aws_access_key": re.compile(r"AKIA[0-9A-Z]{16}"),
         "google_api_key": re.compile(r"AIza[0-9A-Za-z\-_]{35}"),
@@ -78,7 +72,6 @@ class DexAnalyzer(BaseStaticAnalyzer):
         "private_key": re.compile(r"-----BEGIN (?:RSA )?PRIVATE KEY-----"),
     }
 
-    # Паттерны потенциально опасных путей (path traversal / внешние dex)
     DANGEROUS_PATH_PATTERNS: Dict[str, re.Pattern] = {
         "external_dex": re.compile(r"/(?:sdcard|storage/emulated|mnt/sdcard)/.+\.dex", re.IGNORECASE),
         "path_traversal": re.compile(r"\.\./"),
@@ -89,7 +82,6 @@ class DexAnalyzer(BaseStaticAnalyzer):
 
         findings: List[Threat] = []
 
-        # Флаги для сложных паттернов (например, WebView RCE)
         found_webview_js = False
         found_webview_js_interface = False
 
@@ -103,7 +95,6 @@ class DexAnalyzer(BaseStaticAnalyzer):
             if m is None:
                 continue
 
-            # Пытаемся безопасно достать имя/класс/дескриптор под androguard 3.3.5
             try:
                 class_name = m.get_class_name()
             except AttributeError:
@@ -135,13 +126,11 @@ class DexAnalyzer(BaseStaticAnalyzer):
                 )
                 findings.append(t)
 
-                # Отдельно помечаем WebView-case
                 if api_info["type"] == "webview_js_enabled":
                     found_webview_js = True
                 if api_info["type"] == "webview_add_js_interface":
                     found_webview_js_interface = True
 
-        # Если и JS включён, и JS-интерфейс добавлен — классический WebView RCE-риск
         if found_webview_js and found_webview_js_interface:
             findings.append(
                 Threat(
@@ -168,7 +157,6 @@ class DexAnalyzer(BaseStaticAnalyzer):
                 for s in get_strings():
                     if s is None:
                         continue
-                    # s может быть bytes или str
                     if isinstance(s, bytes):
                         try:
                             text = s.decode("utf-8", errors="ignore")
@@ -194,7 +182,6 @@ class DexAnalyzer(BaseStaticAnalyzer):
                                 )
                             )
             except Exception:
-                # Не валим весь анализ из-за одной DEX-ошибки
                 continue
 
         # ---------- Анализ строк на опасные пути / traversal ----------

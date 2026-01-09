@@ -18,7 +18,6 @@ def _get_android_attr(elem, name: str, default: Optional[str] = None) -> Optiona
 class ManifestAnalyzer(BaseStaticAnalyzer):
     name = "ManifestAnalyzer"
 
-    # Системные broadcast-action’ы, если receiver на них повешен и открыт — риск injection
     SENSITIVE_BROADCAST_ACTIONS: Set[str] = {
         "android.intent.action.BOOT_COMPLETED",
         "android.intent.action.PACKAGE_ADDED",
@@ -31,7 +30,6 @@ class ManifestAnalyzer(BaseStaticAnalyzer):
         apk = load_apk(apk_path)
         manifest = apk.get_android_manifest_xml()
 
-        # Базовые метаданные
         analysis.package_name = apk.get_package()
         analysis.app_name = apk.get_app_name()
         analysis.version_name = apk.get_androidversion_name()
@@ -40,7 +38,6 @@ class ManifestAnalyzer(BaseStaticAnalyzer):
 
         application = manifest.find("application")
         if application is not None:
-            # debuggable
             debuggable = _get_android_attr(application, "debuggable")
             if debuggable == "true":
                 findings.append(
@@ -57,7 +54,6 @@ class ManifestAnalyzer(BaseStaticAnalyzer):
                     )
                 )
 
-            # sharedUserId
             shared_user_id = _get_android_attr(application, "sharedUserId")
             if shared_user_id:
                 findings.append(
@@ -102,18 +98,11 @@ class ManifestAnalyzer(BaseStaticAnalyzer):
     # --------- helpers ----------
 
     def _effective_exported(self, elem) -> bool:
-        """
-        Простая эвристика "экспортированности" компонента.
-        - android:exported="true" -> всегда exported
-        - если атрибут не задан, но есть <intent-filter> -> считаем exported
-          (Android до 12, targetSdk<31)
-        """
         exported_attr = _get_android_attr(elem, "exported")
         if exported_attr == "true":
             return True
         if exported_attr == "false":
             return False
-        # Не задан явно
         has_intent_filter = elem.find("intent-filter") is not None
         return has_intent_filter
 
@@ -126,7 +115,6 @@ class ManifestAnalyzer(BaseStaticAnalyzer):
 
         exported_effective = self._effective_exported(activity)
 
-        # Экспортированный activity без явного permission — базовый риск
         if exported_effective and not permission:
             findings.append(
                 Threat(
@@ -144,7 +132,6 @@ class ManifestAnalyzer(BaseStaticAnalyzer):
                 )
             )
 
-        # Поиск task hijacking / activity injection
         has_launcher = False
         has_browsable = False
         has_default = False
@@ -158,10 +145,6 @@ class ManifestAnalyzer(BaseStaticAnalyzer):
                 if cat_name == "android.intent.category.DEFAULT":
                     has_default = True
 
-        # Эвристика task hijacking:
-        # - exported
-        # - есть LAUNCHER или BROWSABLE/DEFAULT
-        # - нестандартный taskAffinity / singleTask / singleInstance
         risky_affinity = bool(task_affinity and task_affinity != package_name)
         risky_launch_mode = launch_mode in ("singleTask", "singleInstance")
         if exported_effective and (has_launcher or (has_browsable and has_default)) and (risky_affinity or risky_launch_mode):
@@ -190,7 +173,6 @@ class ManifestAnalyzer(BaseStaticAnalyzer):
         permission = _get_android_attr(receiver, "permission")
         exported_effective = self._effective_exported(receiver)
 
-        # Экспортированный receiver без permission
         if exported_effective and not permission:
             findings.append(
                 Threat(
@@ -207,7 +189,6 @@ class ManifestAnalyzer(BaseStaticAnalyzer):
                 )
             )
 
-        # Broadcast injection: слушает чувствительные системные action’ы
         if exported_effective:
             for ifilter in receiver.findall("intent-filter"):
                 for act in ifilter.findall("action"):
@@ -281,7 +262,6 @@ class ManifestAnalyzer(BaseStaticAnalyzer):
                 )
             )
 
-        # Риск traversal / широкого доступа по authorities + grantUriPermissions
         if exported_effective and grant_uri_permissions == "true" and (
                 not permission and not (read_perm or write_perm)):
             findings.append(

@@ -24,7 +24,6 @@ def _run_adb(cmd: list[str], device_id: Optional[str] = None) -> subprocess.Comp
 
 
 def install_apk_via_adb(apk_path: str, device_id: Optional[str] = None) -> bool:
-    """Установка APK через adb install."""
     proc = _run_adb(["install", "-r", apk_path], device_id=device_id)
     if proc.returncode != 0:
         print(f"[dyn] adb install error: {proc.stderr.strip()}")
@@ -34,7 +33,6 @@ def install_apk_via_adb(apk_path: str, device_id: Optional[str] = None) -> bool:
 
 
 def launch_app_via_adb(package_name: str, device_id: Optional[str] = None) -> None:
-    """Запуск приложения через adb shell monkey."""
     proc = _run_adb(
         ["shell", "monkey", "-p", package_name, "-c", "android.intent.category.LAUNCHER", "1"],
         device_id=device_id,
@@ -49,7 +47,6 @@ def launch_app_via_adb(package_name: str, device_id: Optional[str] = None) -> No
 
 FRIDA_SCRIPT = r"""
 (function () {
-  // Всегда даём признаки жизни
   send({ kind: "frida_status", status: "script_loaded_native" });
   send({kind:"frida_status", status: (Java && Java.available) ? "java_available" : "java_not_available"});
 
@@ -66,7 +63,6 @@ FRIDA_SCRIPT = r"""
     return "other";
   }
 
-  // Важно: ищем символы в libc.so, а не через null
   function hookExport(name, onEnterFn, onLeaveFn) {
     var addr = null;
 
@@ -96,7 +92,6 @@ FRIDA_SCRIPT = r"""
   // FILE I/O (libc)
   // -------------------------
 
-  // Android часто использует openat64/open64/__openat64, поэтому хукаем набор вариантов
   ["open", "open64", "openat", "openat64", "__openat", "__openat64"].forEach(function (fn) {
     hookExport(fn, function (args) {
       var pathPtr = (fn.indexOf("openat") !== -1) ? args[1] : args[0];
@@ -112,7 +107,6 @@ FRIDA_SCRIPT = r"""
     });
   });
 
-  // read/write — полезны и для файлов, и для сокетов
   hookExport("read", function (args) {
     send({
       kind: "file_io",
@@ -136,8 +130,6 @@ FRIDA_SCRIPT = r"""
   // -------------------------
   // NETWORK (libc)
   // -------------------------
-  // Минимальный и очень устойчивый подход:
-  // фиксируем факт сетевых вызовов, а не пытаемся везде парсить sockaddr (это можно расширять позже)
 
   ["connect", "send", "sendto", "sendmsg", "recv", "recvfrom", "recvmsg"].forEach(function (fn) {
     hookExport(fn, function (args) {
@@ -149,7 +141,6 @@ FRIDA_SCRIPT = r"""
     });
   });
 
-  // Финальный статус
   send({ kind: "frida_status", status: "hooks_attached" });
 })();
 """
@@ -176,7 +167,6 @@ def _severity_for_file_event(location: str, op: str) -> Severity:
 
 
 def _severity_for_net_call(api: str) -> Severity:
-    # очень простая эвристика: connect/send* => LOW, recv* => INFO
     if api and ("connect" in api or "send" in api):
         return Severity.LOW
     return Severity.INFO
@@ -189,21 +179,14 @@ def run_dynamic_analysis_session(
     duration: int = 60,
     device_id: Optional[str] = None,
 ) -> List[Threat]:
-    """
-    Native-only динамический анализ:
-    - файловые системные вызовы (open*/read/write)
-    - сетевые системные вызовы (connect/send*/recv*)
-    Работает даже для NDK/Qt приложений.
-    """
+
     threats: List[Threat] = []
 
-    # 1) Получаем устройство
     if device_id:
         device = frida.get_device(device_id)
     else:
         device = frida.get_usb_device(timeout=10)
 
-    # 2) Убеждаемся, что приложение запущено
     proc = _run_adb(["shell", "pidof", package_name], device_id=device_id)
     pids: list[int] = []
     if proc.returncode == 0 and proc.stdout.strip():
@@ -227,7 +210,6 @@ def run_dynamic_analysis_session(
     if not pids:
         raise RuntimeError(f"[dyn] Не удалось получить PID процесса {package_name}. Приложение не запущено?")
 
-    # 3) Выбираем PID: пробуем по очереди (если несколько процессов)
     chosen_session = None
     chosen_pid = None
     chosen_script = None
@@ -239,7 +221,6 @@ def run_dynamic_analysis_session(
         got = {"hooks": False}
 
         def _probe_message(message, data):
-            # не глотаем ошибки JS
             if message.get("type") == "error":
                 print("[dyn] FRIDA SCRIPT ERROR (probe):", message.get("stack") or message)
                 return
@@ -261,7 +242,6 @@ def run_dynamic_analysis_session(
             if ok:
                 chosen_session, chosen_script, chosen_pid = session, script, candidate
                 break
-            # если hooks_attached не получили — отсоединяемся
             try:
                 session.detach()
             except Exception:
@@ -271,7 +251,6 @@ def run_dynamic_analysis_session(
             continue
 
     if chosen_session is None or chosen_script is None or chosen_pid is None:
-        # fallback: attach к первому pid без "probe"
         chosen_pid = pids[0]
         print(f"[dyn] Fallback attach to pid={chosen_pid}")
         chosen_session = device.attach(chosen_pid)
@@ -279,9 +258,7 @@ def run_dynamic_analysis_session(
 
     print(f"[dyn] Using pid={chosen_pid} for instrumentation")
 
-    # 4) Основной on_message: собираем Threat + печатаем статусы hook_ok/hook_missing
     def on_message(message, data):
-        # Очень важно: показываем ошибки frida-скрипта
         if message.get("type") == "error":
             print("[dyn] FRIDA SCRIPT ERROR:", message.get("stack") or message)
             threats.append(
@@ -348,7 +325,6 @@ def run_dynamic_analysis_session(
             return
 
     chosen_script.on("message", on_message)
-    # НЕ делаем chosen_script.load() повторно — он уже загружен в _try_attach()
 
     print(f"[dyn] Hooks loaded, listening for {duration} seconds...")
     time.sleep(max(1, duration))
@@ -359,7 +335,6 @@ def run_dynamic_analysis_session(
         pass
 
     if not threats:
-        # чтобы PDF не выглядел пустым как "ничего не запустилось"
         threats.append(
             Threat(
                 analyzer=DYNAMIC_ANALYZER_NAME,

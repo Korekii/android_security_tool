@@ -13,9 +13,6 @@ from reportlab.pdfbase.ttfonts import TTFont
 
 from core.models import AnalysisResult, Severity
 
-# -----------------------------
-#  Шрифты для кириллицы
-# -----------------------------
 
 FONT_MAIN = "ArialCyr"
 FONT_BOLD = "ArialCyr-Bold"
@@ -33,13 +30,9 @@ def _register_fonts() -> None:
         pdfmetrics.registerFont(TTFont(FONT_ITALIC, italic))
     except Exception as e:
         print(f"[PDF] Ошибка регистрации Arial: {e}")
-        # fallback — НЕ меняем глобальные переменные, просто регистрируем Helvetica
         pdfmetrics.registerFont(TTFont("Helvetica", regular))
 
 
-# -----------------------------
-#  Константы оформления
-# -----------------------------
 
 SEVERITY_ORDER: List[Severity] = [
     Severity.CRITICAL,
@@ -66,9 +59,6 @@ SEVERITY_COLOR: Dict[Severity, colors.Color] = {
 }
 
 
-# -----------------------------
-#  Вспомогательные функции
-# -----------------------------
 
 def _ensure_dir_for_file(path: str) -> None:
     directory = os.path.dirname(path)
@@ -94,9 +84,6 @@ def _wrap_text(c, text, max_width, font, size):
     return lines
 
 
-# -----------------------------
-#  Генерация PDF
-# -----------------------------
 
 def generate_pdf_report(
     analysis: AnalysisResult,
@@ -151,7 +138,6 @@ def generate_pdf_report(
     c.line(mx, y, mx + content_w, y)
     y -= 20
 
-    # Group findings
     grouped = {sev: [] for sev in SEVERITY_ORDER}
     for f in analysis.findings:
         grouped[f.severity].append(f)
@@ -161,7 +147,6 @@ def generate_pdf_report(
         if not items:
             continue
 
-        # Section header
         if y < my + 40:
             new_page()
 
@@ -172,7 +157,6 @@ def generate_pdf_report(
         c.drawString(mx + 4, y, f"{SEVERITY_TITLES[sev]} ({len(items)})")
         y -= 26
 
-        # Issue cards
         for fnd in items:
             if y < my + 80:
                 new_page()
@@ -180,10 +164,8 @@ def generate_pdf_report(
             box_top = y
             text_lines = []
 
-            # Title
             text_lines.append((FONT_BOLD, 10, f"{fnd.analyzer}::{fnd.type}"))
 
-            # Fields
             text_lines.append((FONT_MAIN, 9, f"Title: {fnd.title}"))
             if fnd.location:
                 text_lines.append((FONT_MAIN, 9, f"Location: {fnd.location}"))
@@ -197,7 +179,6 @@ def generate_pdf_report(
                 for ln in _wrap_text(c, meta, content_w - 8, FONT_ITALIC, 8):
                     text_lines.append((FONT_ITALIC, 8, ln))
 
-            # Draw card
             inner_y = box_top - 6
             total_h = 0
 
