@@ -11,7 +11,7 @@ from analysis_modules.static.dex_analyzer import DexAnalyzer
 from analysis_modules.static.resources_analyzer import ResourcesAnalyzer
 from analysis_modules.static.signature_analyzer import SignatureAnalyzer
 from analysis_modules.static.crypto_analyzer import CryptoAnalyzer
-
+from analysis_modules.static.ml_analyzer import MlAnalyzer
 
 def get_default_static_analyzers() -> List[BaseStaticAnalyzer]:
     return [
@@ -21,6 +21,7 @@ def get_default_static_analyzers() -> List[BaseStaticAnalyzer]:
         ResourcesAnalyzer(),
         SignatureAnalyzer(),
         CryptoAnalyzer(),
+        MlAnalyzer(),
     ]
 
 
